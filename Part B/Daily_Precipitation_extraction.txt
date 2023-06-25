@@ -1,0 +1,46 @@
+/* Define the user's own study area. Here is our demo of PLEEZ. 
+   You can upload the shapefile 'PoYang_Rec84' we shared in the Github and 
+   recitify this path to make this demo run successfully.*/
+var table = ee.FeatureCollection("users/ykz/PoYang_Rec84");
+var roi = table;
+// Define the clip function for an imagecollection.
+function Clip(img){
+  return img.clip(roi);
+}
+// Clip the targeted dataset based on the start month and end month for a given year.
+var dataset = ee.ImageCollection('UCSB-CHG/CHIRPS/DAILY')
+                .filterDate('2020-06-01', '2020-09-01')
+                  .filter(ee.Filter.calendarRange(6, 8, 'month'))
+                  .map(Clip);
+var precipitation = dataset.select('precipitation');
+print(dataset);
+// Show the result in the map.
+var precipitationVis = {
+  min: 1.0,
+  max: 17.0,
+  palette: ['001137', '0aab1e', 'e7eb05', 'ff4a2d', 'e90000'],
+};
+Map.centerObject(table,6);
+Map.addLayer(precipitation, precipitationVis, 'Precipitation');
+
+//Export three months of daily rainfall rasters in tif format.
+function exportImageCollection(imgCol) { 
+  var indexList = imgCol.reduceColumns(ee.Reducer.toList(), ["system:index"]) 
+                        .get("list"); 
+  indexList.evaluate(function(indexs) { 
+    for (var i=0; i<indexs.length; i++) { 
+      var image = imgCol.filter(ee.Filter.eq("system:index", indexs[i])).first(); 
+      Export.image.toDrive({ 
+        image: image.clip(roi), 
+        description: indexs[i], 
+        fileNamePrefix: indexs[i], 
+        folder: 'CHIRPS_2020_1KM',
+        region: roi, 
+        scale: 1000, // Resolution of the exported raster
+        crs: "EPSG:4326",
+        maxPixels: 1e13 
+      }); 
+    } 
+  }); 
+} 
+exportImageCollection(precipitation);
