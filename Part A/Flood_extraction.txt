@@ -1,0 +1,114 @@
+/* Define the user's own study area. Here is our demo of PLEEZ. 
+   You can upload the shapefile 'PoYang_bd' we shared in the Github and 
+   recitify this path to make this demo run successfully.*/
+var geometry = ee.FeatureCollection("users/ykz/PoYang_bd");
+/* Set start and end dates of a period BEFORE the flood. Make sure it is long enough for 
+   Sentinel-1 to acquire an image (repitition rate = 6 days). Adjust these parameters, if
+   your ImageCollections (see Console) do not contain any elements.*/
+var before_start= '2020-07-07';
+var before_end='2020-07-09';
+
+// Now set the same parameters for AFTER the flood.
+var after_start='2020-07-19';
+var after_end='2020-07-21';
+
+/********************************************************************************************
+                           SET SAR PARAMETERS (can be left default)*/
+var polarization = "VH"; /*or 'VV' --> VH mostly is the prefered polarization for flood mapping.
+                           However, it always depends on your study area, you can select 'VV' 
+                           as well.*/
+
+var pass_direction = "ASCENDING"; /* or 'DESCENDING'when images are being compared use only one 
+                           pass direction. Consider changing this parameter, if your image 
+                           collection is empty. In some areas more Ascending images exist than 
+                           than descending or the other way around.*/
+
+var difference_threshold = 1.25;/*threshodl to be applied on the difference image (after flood
+                           - before flood). It has been chosen by trial and error. In case your
+                           flood extent result shows many false-positive or negative signals, 
+                           consider changing it! */
+
+// rename selected geometry feature
+var aoi = geometry;
+
+// Load and filter Sentinel-1 GRD data by predefined parameters 
+var collection= ee.ImageCollection('COPERNICUS/S1_GRD')
+  .filter(ee.Filter.eq('instrumentMode','IW'))
+  .filter(ee.Filter.listContains('transmitterReceiverPolarisation', polarization))
+  .filter(ee.Filter.eq('orbitProperties_pass',pass_direction)) 
+  .filter(ee.Filter.eq('resolution_meters',10))
+  .filterBounds(aoi)
+  .select(polarization);
+ 
+// Select images by predefined dates
+var before_collection = collection.filterDate(before_start, before_end);
+var after_collection = collection.filterDate(after_start,after_end);
+
+// Create a mosaic of selected tiles and clip to study area
+var before = before_collection.mosaic().clip(aoi);
+var after = after_collection.mosaic().clip(aoi);
+
+// Apply reduce the radar speckle by smoothing  
+var smoothing_radius = 50;
+var before_filtered = before.focal_mean(smoothing_radius, 'circle', 'meters');
+var after_filtered = after.focal_mean(smoothing_radius, 'circle', 'meters');
+
+//------------------------------- FLOOD EXTENT CALCULATION -------------------------------//
+
+// Calculate the difference between the before and after images
+var difference = after_filtered.divide(before_filtered);
+// Apply the predefined difference-threshold and create the flood extent mask 
+var threshold = difference_threshold;
+var difference_binary = difference.gt(threshold);
+// Extract the water area where the pixel value is equal to 1.
+var difference_binary = difference_binary.updateMask(difference_binary.eq(1));
+
+// Compute connectivity of pixels to eliminate those connected to 8 or fewer neighbours
+// This operation reduces noise of the flood extent product 
+var connections = difference_binary.connectedPixelCount();   
+var flooded = difference_binary.updateMask(connections.gte(8));
+// Mask out areas with more than 5 percent slope using a Digital Elevation Model 
+var DEM = ee.Image('WWF/HydroSHEDS/03VFDEM');
+var terrain = ee.Algorithms.Terrain(DEM);
+var slope = terrain.select('slope');
+var flooded = flooded.updateMask(slope.lt(5));
+
+//------------------------------- FLOOD EXTENT mapping -------------------------------//
+Map.centerObject(aoi,8);
+Map.addLayer(before_filtered, {min:-25,max:0}, 'Before Flood',0);
+Map.addLayer(after_filtered, {min:-25,max:0}, 'After Flood',1);
+Map.addLayer(flooded,{palette:"0000FF"},'Flooded areas');
+
+/*Calculate flood extent area
+  Create a raster layer containing the area information of each pixel */
+var flood_pixelarea = flooded.select(polarization)
+  .multiply(ee.Image.pixelArea());
+/*Sum the areas of flooded pixels
+ default is set to 'bestEffort: true' in order to reduce compuation time, for a more 
+ accurate result set bestEffort to false and increase 'maxPixels'. */ 
+var flood_stats = flood_pixelarea.reduceRegion({
+  reducer: ee.Reducer.sum(),              
+  geometry: aoi,
+  scale: 10, // native resolution
+  //maxPixels: 1e9,
+  bestEffort: true
+  });
+  
+// Convert the flood extent to hectares (area calculations are originally given in meters)  
+var flood_area_ha = flood_stats
+  .getNumber(polarization)
+  .divide(1000000)
+  .round();
+print('area/ha', flood_area_ha);
+  
+// Export the food inundation raster (.tif)
+Export.image.toDrive({
+  image: flooded, 
+  description: 'Flood_extent_raster',
+  fileNamePrefix: 'flooded',
+  folder: 'Flood',
+  crs: 'EPSG:4326',
+  scale: 10,
+  region: aoi, 
+  maxPixels: 1e13
+});
