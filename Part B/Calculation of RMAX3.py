@@ -12,7 +12,7 @@ import os
 # Read all tifs' names for a given folder
 def get_tif_name(filepath): 
     Tifnames=os.listdir(filepath)
-    Tifnames.sort(key=lambda x:int(x[4:-4])) # 按照mmdd对文件名排序
+    Tifnames.sort(key=lambda x:int(x[4:-4])) 
     return Tifnames
 
 # Read a tif and transform it as a numpy array
